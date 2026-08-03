@@ -245,14 +245,35 @@ else:
             [r"Temperature\s*Class.*?([^\n]+)"]
         ),
         "Gas Group": ("Gas Group", [r"Gas\s*Group.*?([^\n]+)"]),
+        # ── FIXED: two bugs here.
+        # 1. Old pattern captured to end-of-line, which on this vendor's
+        #    PDF scoops up unrelated grease info crammed onto the same
+        #    line: "Make & Ref No. (DE): SKF/FAG 6314-C4 grease qty, 70
+        #    gram" — now stops right before "grease".
+        # 2. The expected value is prefixed with the bearing TYPE
+        #    (e.g. "Antifriction"), which comes from a separate checkbox
+        #    line above ("Bearing Type: [ ]Ball [ ]Roller [ ]Sleeve
+        #    [x]Antifriction") and was never captured before. We detect
+        #    which option is checked using the filled-checkbox glyph
+        #    (U+F06E is consistently the "checked" glyph across this
+        #    vendor's whole document — confirmed against Winding
+        #    Connection/RTD checkboxes elsewhere on the same PDF) and
+        #    prepend it to the make/ref value.
         "Bearing Type DE": (
             "Bearing Type DE",
             [
+                r"Make\s*&\s*Ref\s*No\.\s*\(DE\)\s*:?\s*([A-Za-z0-9/\-]+(?:\s[A-Za-z0-9/\-]+)*?)\s+grease",
                 r"Make\s*&\s*Ref\s*No\.\s*\(DE\)\s*:?\s*([^\n]+)",
                 r"Bearing\s*DE.*?([^\n]+)"
             ]
         ),
-        "Bearing Type NDE": ("Bearing Type NDE", [r"Make\s*&\s*Ref\s*No\.\s*\(NDE\):\s*([^\n]+)"]),
+        "Bearing Type NDE": (
+            "Bearing Type NDE",
+            [
+                r"Make\s*&\s*Ref\s*No\.\s*\(NDE\):\s*([A-Za-z0-9/\-]+(?:\s[A-Za-z0-9/\-]+)*?)\s+grease",
+                r"Make\s*&\s*Ref\s*No\.\s*\(NDE\):\s*([^\n]+)"
+            ]
+        ),
         # ── FIXED: "Cooling Time Constant" was NEVER matching because
         # PyPDF2 was splitting it as "C\nooling Time Constant" — confirmed
         # against your actual PDF. dehyphenate() above fixes the word split;
@@ -273,10 +294,19 @@ else:
                 r"Terminal\s*Box\s*Entry\s*:?\s*([^\n]+)"
             ]
         ),
+        # ── FIXED: real text is "Winding Connection: [ ]Star [x]Delta" —
+        # the unchecked option ("Star") always appears textually before
+        # the checked one ("Delta") on this vendor's layout (same pattern
+        # as the RTD/Thermocouples checkboxes). The old alternation
+        # "(Star|Delta)" just grabbed whichever word appeared first,
+        # which is always the unchecked one. Now we explicitly require
+        # "Star" to appear first (skipped over) and capture whichever
+        # word comes after it.
         "Winding Connection": (
             "Winding Connection",
             [
-                r"Winding\s*Connection.*?(Star|Delta)",
+                r"Winding\s*Connection:?\s*" + CHK + r"Star" + CHK + r"(Star|Delta)",
+                r"Winding\s*connections\s+(Delta|Star)",
                 r"Delta",
                 r"Star"
             ]
@@ -358,6 +388,30 @@ else:
     # ── Post-processing: strip stray internal space in Datasheet No ────────
     if "Datasheet No" in motor_data:
         motor_data["Datasheet No"] = motor_data["Datasheet No"].replace(" ", "")
+
+    # ── NEW: prepend the checked bearing-type option ("Ball"/"Roller"/
+    # "Sleeve"/"Antifriction") to Bearing Type DE/NDE. This comes from a
+    # separate checkbox line ("Bearing Type: [ ]Ball [ ]Roller [ ]Sleeve
+    # [x]Antifriction") elsewhere in the text, not from the Make & Ref
+    # No. line itself, so it has to be extracted and combined separately.
+    # U+F06E is the filled/checked-checkbox glyph consistently used across
+    # this vendor's whole document (confirmed against Winding Connection
+    # and RTD checkboxes on the same PDF) — whichever option immediately
+    # follows it is the one that's actually selected.
+    bearing_type_m = re.search(
+        r"Bearing Type:.*?\uf06e\s*(Ball|Roller|Sleeve|Antifriction)",
+        t, re.IGNORECASE
+    )
+    if bearing_type_m:
+        bearing_type_val = bearing_type_m.group(1)
+        for field in ("Bearing Type DE", "Bearing Type NDE"):
+            if field in motor_data and not motor_data[field].lower().startswith(bearing_type_val.lower()):
+                motor_data[field] = f"{bearing_type_val} {motor_data[field]}"
+        print2log(f"  [FOUND] Bearing Type checkbox = '{bearing_type_val}' (prepended to DE/NDE)")
+    else:
+        print2log("  [NOT FOUND] Bearing Type checkbox (Ball/Roller/Sleeve/Antifriction) — "
+                   "DE/NDE values left without the type prefix")
+
 
     # ── Combined / multi-part fields ────────────────────────────────────────
     # ── FIXED: real PDF has "rr=0.0000018" (no spaces around "=") and
