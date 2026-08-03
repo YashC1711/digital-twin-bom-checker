@@ -9,6 +9,14 @@ CHK = r"[\s\uE000-\uF8FF;:]*"
 
 MOTOR_SYNONYMS = {
     "Tag Name": [(r"Tag No\.\s*(MP-PP\d+-M\d+A/B)", 1)],
+    # ── FIXED: real text is "DOCUMENT TITLE:\nApproved.Pump Motor
+    # Datasheet for Recycled water pump (10kg/cm2g)" — a page-1 review
+    # checkbox label ("Approved.") gets glued onto the front of the real
+    # value due to column-scrambled extraction. The pattern itself can't
+    # cleanly exclude this (it's not separated by anything regex can
+    # anchor on), so Node 3 strips a small known set of these review-
+    # status prefixes as a post-processing step after extraction — see
+    # the "Tag Description" cleanup block in Node 3.
     "Tag Description": [(r"DOCUMENT TITLE:\s*([^\n]+)", 1)],
     "Site Code": [(r"Program No\s*\n?\s*([A-Z0-9]+)", 1)],
     "Site Name": [(r"PROJECT LOCATION:\s*([^\n]+)", 1)],
@@ -45,7 +53,11 @@ MOTOR_SYNONYMS = {
     # pattern itself is loosened as a second layer of safety.
     "Cooling Time Constant": [(r"Cooling\s*Time\s*Constant.*?=\s*(\d+)", 1)],
 
-    "DE Bearing": [(r"Make\s*&\s*Ref No\.\s*\(DE\):\s*([^\n]+)", 1)],
+    # ── FIXED: same "captures to end-of-line, glues on grease info" bug
+    # already fixed for the separately-named "Bearing Type DE" field —
+    # this is a DIFFERENT Excel column with the same underlying pattern
+    # bug, so it needed the identical fix applied here too.
+    "DE Bearing": [(r"Make\s*&\s*Ref No\.\s*\(DE\):\s*([A-Za-z0-9/\-]+(?:\s[A-Za-z0-9/\-]+)*?)\s+grease", 1)],
     "DOR": [
         # ── FIXED: reordered. The generic pattern below used to run
         # first (in Node 3's own merge order, base MOTOR_FIELDS didn't
@@ -74,7 +86,15 @@ MOTOR_SYNONYMS = {
     "Excitor Amp": [],             # NOT IN PDF (confirmed)
     "Excitor Voltage": [],         # NOT IN PDF (confirmed)
 
-    "Explosion Protection Examination Certificate Number": [(r"Certificate No\.:-\s*([^\n]+)", 1)],
+    # ── FIXED: was capturing to end-of-line, gluing on unrelated codes
+    # crammed onto the same line by PyPDF2 ("Not ApplicableMT-N23P01-
+    # D11NPP-MPP001-TPD-Q-04MP-PP031-M600173A/B"). This value is always
+    # either "Not Applicable" or an actual alphanumeric certificate code
+    # on this vendor's datasheets, so we match either explicitly and stop
+    # there rather than capturing everything to end of line.
+    "Explosion Protection Examination Certificate Number": [
+        (r"Certificate No\.:-\s*(Not Applicable|[A-Z0-9\-/]+)", 1),
+    ],
     "Explosion Protection Notified Body": [(r"Certifying Authority:-\s*([^\n]+)", 1)],
     "Explosion Protection Temperature Class": [(r"Temperature Class:-\s*([^\n]+)", 1)],
 
@@ -117,7 +137,13 @@ MOTOR_SYNONYMS = {
 
     "Mounting Arrangement": [(r"Mounting:\s*\*?\s*(B3|B5|V1|V3|Foot|Flange)", 1)],
     "MTB Position": [(r"Terminal box position\s+([A-Z]+)", 1)],
-    "NDE Bearing": [(r"Make\s*&\s*Ref No\.\s*\(NDE\):\s*([^\n]+)", 1)],
+    # ── FIXED: same grease-trim fix as DE Bearing above. Note the real
+    # PDF text has a stray internal space in this specific line ("SK F/
+    # FAG 6314-C4" instead of "SKF/FAG") — that's a PyPDF2 extraction
+    # artifact in the source, not something this regex introduces or can
+    # safely "fix" by guessing; flagging it rather than silently altering
+    # the extracted text.
+    "NDE Bearing": [(r"Make\s*&\s*Ref No\.\s*\(NDE\):\s*([A-Za-z0-9/\-]+(?:\s[A-Za-z0-9/\-]+)*?)\s+grease", 1)],
 
     "No Load Current": [],       # NOT IN PDF (confirmed)
     "No Load Current UOM": [],   # NOT IN PDF (confirmed)
