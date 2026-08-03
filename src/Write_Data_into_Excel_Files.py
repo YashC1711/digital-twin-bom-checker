@@ -2,7 +2,7 @@ import os as custom_os
 import openpyxl
 import ast
 
-print2log("===== NODE 5: Write to Excel =====")
+print2log("===== NODE 5: Write to Excel (FIXED) =====")
 
 def write_data_to_excel(xlsx_path, data_dict, sheet_name_hint, header_row=2, data_row=4):
     """
@@ -12,6 +12,32 @@ def write_data_to_excel(xlsx_path, data_dict, sheet_name_hint, header_row=2, dat
     if not xlsx_path or not custom_os.path.isfile(xlsx_path):
         print2log(f"ERROR: Excel path not found, skipping write: {xlsx_path}")
         return False
+
+    # ── NEW: guard against Microsoft Office lock/temp files ────────────────
+    # A file named "~$EA001-Motor.xlsx" is NOT a real workbook — it's a small
+    # binary lock-marker Office creates while "EA001-Motor.xlsx" is open in
+    # Excel (or leaves behind after a crash). openpyxl can never open it
+    # ("File is not a zip file") because it isn't a zip archive at all.
+    # This means the real bug is almost certainly upstream — whatever step
+    # resolves motor_xlsx_path is picking up this lock file during a folder
+    # scan/glob instead of filtering it out. This guard is a safety net so
+    # Node 5 doesn't hard-fail on it, but the upstream file-discovery logic
+    # should also exclude any filename starting with "~$".
+    basename = custom_os.path.basename(xlsx_path)
+    if basename.startswith("~$"):
+        real_name = basename[2:]
+        real_path = custom_os.path.join(custom_os.path.dirname(xlsx_path), real_name)
+        if custom_os.path.isfile(real_path):
+            print2log(f"WARNING: '{basename}' is an Office lock/temp file (the real workbook "
+                       f"is currently open in Excel somewhere, or was left open by a crashed "
+                       f"session). Falling back to the actual file: '{real_name}'")
+            xlsx_path = real_path
+        else:
+            print2log(f"ERROR: '{xlsx_path}' is an Office lock/temp file, not a real workbook, "
+                       f"and no matching real file '{real_name}' exists alongside it. Close the "
+                       f"file in Excel (or delete the stray '~$' lock file) and re-run.")
+            return False
+
     if not data_dict:
         print2log(f"WARNING: No data to write for '{xlsx_path}' — skipping write.")
         return False
