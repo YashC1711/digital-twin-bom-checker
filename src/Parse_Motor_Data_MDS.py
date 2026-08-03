@@ -106,9 +106,18 @@ else:
             "Parent tag name",
             [r"Tag No\.\s*(MP-PP\d+-M\d+A/B)"]
         ),
+        # ── FIXED: "Manufacturer:-" appears twice in this PDF (once near
+        # a "Refer to Specification" fragment, once near the Certificate
+        # No. block), and text scrambling means unrelated text from the
+        # SAME LINE as the second occurrence ("TEFC IC411F (Temp. rise
+        # limited to class 'B')") was getting captured alongside the
+        # real value. Since the manufacturer name itself is a fixed,
+        # known literal string on this datasheet, search for it directly
+        # rather than anchoring on the unreliable "Manufacturer:-" label.
         "Manufacture": (
             "Manufacture",
             [
+                r"(CG Power and Industrial Solutions Limited)",
                 r"Manufacturer:-\s*([^\n]+CG Power and Industrial Solutions Limited)",
                 r"Manufacturer:-\s*([^\n]+)",
                 r"Manufacturer:\s*([^\n]+)"
@@ -208,9 +217,11 @@ else:
         # EA001-Motor.xlsx template that no column exists for it anywhere
         # in the 141 headers. Extracting it was harmless but always
         # produced a noisy "no matching Excel column" warning in Node 5.
+        # ── FIXED: was capturing to end-of-line ("2/3 (Considering load
+        # GD²=Motor GD²)") — now stops right after the digit/digit value.
         "Number of Starts Per Hour": (
             "Number of Starts Per Hour",
-            [r"Max\.\s*No\.\s*of\s*Starts\s*in\s*1\s*Hour.*?([^\n]+)"]
+            [r"Max\.\s*No\.\s*of\s*Starts\s*in\s*1\s*Hour.*?(\d+/\d+|\d+)"]
         ),
         "Transportation Weight": (
             "Transportation Weight",
@@ -240,11 +251,15 @@ else:
                 r"Explosion\s*Protection.*?([^\n]+)"
             ]
         ),
+        # ── FIXED: was capturing to end-of-line, which on this vendor's
+        # PDF glues on the NEXT field's label/checkbox text (e.g.
+        # "NA Thermocouples Req.: [x]Yes [ ]No"). Now stops at the first
+        # token right after the label.
         "Explosion Protection Temperature Class": (
             "Explosion Protection Temperature Class",
-            [r"Temperature\s*Class.*?([^\n]+)"]
+            [r"Temperature\s*Class:-\s*(\S+)"]
         ),
-        "Gas Group": ("Gas Group", [r"Gas\s*Group.*?([^\n]+)"]),
+        "Gas Group": ("Gas Group", [r"Gas\s*Group:-\s*(\S+)"]),
         # ── FIXED: two bugs here.
         # 1. Old pattern captured to end-of-line, which on this vendor's
         #    PDF scoops up unrelated grease info crammed onto the same
@@ -389,7 +404,42 @@ else:
     if "Datasheet No" in motor_data:
         motor_data["Datasheet No"] = motor_data["Datasheet No"].replace(" ", "")
 
-    # ── NEW: prepend the checked bearing-type option ("Ball"/"Roller"/
+    # ── NEW: strip known page-1 review-status labels that get glued onto
+    # the front of Tag Description due to column-scrambled extraction
+    # (e.g. "Approved.Pump Motor Datasheet for..." -> "Pump Motor
+    # Datasheet for..."). This is a small, known, fixed set of labels
+    # from the DECAL review-feedback checkboxes on page 1 of every one
+    # of these vendor datasheets.
+    if "Tag Description" in motor_data:
+        _REVIEW_PREFIXES = [
+            "Approved with comments.Work may proceed.",
+            "Approved.",
+            "Revise and Resubmit. Work Shall not proceed.",
+            "Retained for Information.",
+            "Cancelled / Superseded",
+            "Final Certified",
+        ]
+        for prefix in _REVIEW_PREFIXES:
+            if motor_data["Tag Description"].startswith(prefix):
+                motor_data["Tag Description"] = motor_data["Tag Description"][len(prefix):].strip()
+                break
+
+    # ── NEW: build a combined Space Heater value from the two underlying
+    # fields (rating + voltage) that PDF prints separately, since the
+    # expected format combines both, e.g. "60 Watts X 2 Nos.; 240 Volts".
+    # NOTE: this matches the vendor PDF's own wording (e.g. "Watts"/"X"),
+    # NOT necessarily your template's exact preferred abbreviation style
+    # ("W"/"x") — if you need the abbreviated style specifically, this
+    # would need a fixed find/replace after this point (e.g. "Watts"->"W",
+    # " X "->" x "), flagging that as a style choice rather than guessing.
+    heater_rating_m = re.search(r"Heater Rating:-\s*([0-9A-Za-z. ]+Nos\.)", t, re.IGNORECASE)
+    heater_voltage_m = re.search(r"Heater Voltage:-\s*([\d.]+\s*Volts)", t, re.IGNORECASE)
+    if heater_rating_m and heater_voltage_m:
+        motor_data["Space Heater"] = f"{heater_rating_m.group(1)}; {heater_voltage_m.group(1)}"
+        print2log(f"  [FOUND] Space Heater (combined) = '{motor_data['Space Heater']}'")
+    elif heater_rating_m:
+        motor_data["Space Heater"] = heater_rating_m.group(1)
+
     # "Sleeve"/"Antifriction") to Bearing Type DE/NDE. This comes from a
     # separate checkbox line ("Bearing Type: [ ]Ball [ ]Roller [ ]Sleeve
     # [x]Antifriction") elsewhere in the text, not from the Make & Ref
