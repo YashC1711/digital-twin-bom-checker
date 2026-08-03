@@ -47,8 +47,16 @@ MOTOR_SYNONYMS = {
 
     "DE Bearing": [(r"Make\s*&\s*Ref No\.\s*\(DE\):\s*([^\n]+)", 1)],
     "DOR": [
-        (r"Direction of rotation\s+([A-Za-z]+)", 1),
-        (r"Direction of Rotation:-.*?(Bi-Dir\.?)", 1),  # FIXED: was group 2, pattern only has 1 group
+        # ── FIXED: reordered. The generic pattern below used to run
+        # first (in Node 3's own merge order, base MOTOR_FIELDS didn't
+        # have this field so this synonym list's own order decides
+        # priority) and matched a boilerplate NOTE sentence ("*Direction
+        # of rotation to be as required by driven equipment.*"),
+        # capturing the word "to" instead of the real value. This
+        # specific, colon-anchored pattern (matches the actual checkbox
+        # line "Direction of Rotation:- ... Bi-Dir.") now runs first.
+        (r"Direction of Rotation:-.*?(Bi-Dir\.?)", 1),
+        (r"Direction of rotation\s+([A-Za-z]+)", 1),  # fallback only
     ],
 
     "Driver Enclosure": [(r"Degree\s*of\s*Protection\s+(IP\d+)", 1)],
