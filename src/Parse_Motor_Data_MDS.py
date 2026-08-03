@@ -204,7 +204,10 @@ else:
                 r"Minimum\s*Accelerating\s*Torque.*?([-+]?\d+(?:\.\d+)?)\s*%\s*FLT"
             ]
         ),
-        "Rotor End float": ("Rotor End float", [r"Rotor\s*End\s*float.*?([-+]?\d+(?:\.\d+)?)"]),
+        # NOTE: "Rotor End float" removed — confirmed against the real
+        # EA001-Motor.xlsx template that no column exists for it anywhere
+        # in the 141 headers. Extracting it was harmless but always
+        # produced a noisy "no matching Excel column" warning in Node 5.
         "Number of Starts Per Hour": (
             "Number of Starts Per Hour",
             [r"Max\.\s*No\.\s*of\s*Starts\s*in\s*1\s*Hour.*?([^\n]+)"]
@@ -301,13 +304,12 @@ else:
                 r"Mounting.*?([^\n]+)"
             ]
         ),
-        "Direction of Rotation": (
-            "Direction of Rotation",
-            [
-                r"Direction of Rotation.*?(Bi-Dir)",
-                r"(Bidirectional)"
-            ]
-        ),
+        # NOTE: "Direction of Rotation" removed — confirmed against the
+        # real EA001-Motor.xlsx template that no column exists with this
+        # exact name. The template's actual column for this data is named
+        # "DOR", which the "DOR" synonym field (loaded via merge below)
+        # already extracts and writes correctly. This was a pure duplicate
+        # producing a noisy "no matching Excel column" warning in Node 5.
         "Duty": (
             "Duty",
             [
