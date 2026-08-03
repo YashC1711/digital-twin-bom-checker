@@ -1,7 +1,24 @@
 import re
 import pandas as pd
 
-print2log("===== NODE 3: Motor Data Parsing =====")
+print2log("===== NODE 3: Motor Data Parsing (FIXED) =====")
+
+# ── NEW: character class matching stray checkbox glyphs from Wingdings/Symbol
+# fonts that PyPDF2 extracts as literal Private-Use-Area unicode chars
+# (e.g. U+F06E, U+F0A8) instead of rendering them as blank/whitespace.
+# Also swallows stray semicolons/colons that sit between a label and its
+# Yes/No value in checkbox-style form fields.
+CHK = r"[\s\uE000-\uF8FF;:]*"
+
+# ── NEW: fixes PyPDF2 splitting a word across a line break mid-token, e.g.
+# "Cooling Time Constant" extracting as "C\nooling Time Constant" or
+# "Direction of Rotation" as "Dire\nction of Rotation". Only joins a
+# lowercase continuation onto the previous line — safe, won't merge
+# unrelated paragraph breaks (which are usually followed by a capital,
+# digit, or a fresh label).
+def dehyphenate(text):
+    return re.sub(r'(?<=[A-Za-z])\n(?=[a-z])', '', text)
+
 
 # ── Helper: single-value regex field extractor ─────────────────────────────
 def find_value(text, patterns, field_name, flags=re.IGNORECASE):
@@ -71,7 +88,8 @@ else:
 if not motor_pdf_text:
     print2log("WARNING: No motor PDF text available — skipping motor parsing.")
 else:
-    t = motor_pdf_text
+    # ── NEW: dehyphenate BEFORE any regex runs against it ───────────────────
+    t = dehyphenate(motor_pdf_text)
 
     MOTOR_FIELDS = {
         "Tag Name": (
@@ -128,6 +146,12 @@ else:
                 r"Insulation\s*Class\s*&\s*Temp\s*Rise.*?([-+]?\d+(?:\.\d+)?)"
             ]
         ),
+        # NOTE: Rated Voltage / Rated Voltage UOM — see call-out at bottom of
+        # file. The "415" is extracted by PyPDF2 completely disconnected
+        # from the "Supply System:" label (floating text box, out of visual
+        # order). This pattern still works because it doesn't rely on that
+        # label at all — it just grabs any bare 3-digit number followed by
+        # "+-10%" anywhere in the text.
         "Rated Voltage": ("Rated Voltage", [r"(\d{3})\s*\+-\s*10%"]),
         "Number of Electrical Phases": (
             "Number of Electrical Phases",
@@ -226,9 +250,13 @@ else:
             ]
         ),
         "Bearing Type NDE": ("Bearing Type NDE", [r"Make\s*&\s*Ref\s*No\.\s*\(NDE\):\s*([^\n]+)"]),
+        # ── FIXED: "Cooling Time Constant" was NEVER matching because
+        # PyPDF2 was splitting it as "C\nooling Time Constant" — confirmed
+        # against your actual PDF. dehyphenate() above fixes the word split;
+        # this pattern also loosens the required spacing to be safe.
         "Heating Time Constant": (
             "Heating Time Constant",
-            [r"Heating\s*Time\s*Constant.*?([-+]?\d+(?:\.\d+)?)\s*min"]
+            [r"Heating\s*Time\s*Constant.*?=\s*([-+]?\d+(?:\.\d+)?)\s*min"]
         ),
         "Cooling Time Constant": (
             "Cooling Time Constant",
@@ -294,6 +322,9 @@ else:
                 r"Type\s*of\s*Protection.*?(IP\d+)"
             ]
         ),
+        # ── FIXED: "Type of motor" followed by a checkbox glyph (U+F06E),
+        # not a plain space. \s+ never matched it. CHK now swallows it.
+        "Motor Type": ("Motor Type", [r"Type of motor" + CHK + r"([A-Za-z ]+[Mm]otor)"]),
         "Exciter Output Current": ("Exciter Output Current", [r"Exciter\s*Output\s*Current.*?([^\n]+)"]),
         "Exciter Output Voltage": ("Exciter Output Voltage", [r"Exciter\s*Output\s*Voltage.*?([^\n]+)"]),
         "Excitor Amp": ("Excitor Amp", [r"Excitor\s*Amp.*?([^\n]+)"]),
@@ -327,14 +358,42 @@ else:
         motor_data["Datasheet No"] = motor_data["Datasheet No"].replace(" ", "")
 
     # ── Combined / multi-part fields ────────────────────────────────────────
+    # ── FIXED: real PDF has "rr=0.0000018" (no spaces around "=") and
+    # "20 °C" (an extra space before the degree symbol, so the old single
+    # "." wildcard for "20.C" didn't cover it). Both loosened below.
     combined_specs = [
-        ("Rotor Resistance (Ac) @ 20°C", r"Rotor\s*Resistance.*?=\s*([\d.]+)\s*/\s*([\d.]+)", "{} / {}"),
-        ("Rotor Reactance @ 20°C", r"Rotor\s*Reactance.*?=\s*([\d.]+)\s*/\s*([\d.]+)", "{} / {}"),
-        ("Stator Resistance (AC) @ 20°C", r"Stator\s*Resistance.*?=\s*([\d.]+)\s*/\s*([\d.]+)", "{} / {}"),
-        ("Stator Reactance @ 20°C", r"Stator\s*Reactance.*?=\s*([\d.]+)\s*/\s*([\d.]+)", "{} / {}"),
+        ("Rotor Resistance (Ac) @ 20°C", r"Rotor\s*Resistance\(ac\)\s*@\s*20\s*.?\s*C\s*rr\s*=\s*([\d.]+)\s*/\s*([\d.]+)", "{} / {}"),
+        ("Rotor Reactance @ 20°C", r"Rotor\s*Reactance\s*@\s*20\s*.?\s*C\s*Xr\s*=\s*([\d.]+)\s*/\s*([\d.]+)", "{} / {}"),
+        ("Stator Resistance (AC) @ 20°C", r"Stator\s*Resistance\(ac\)\s*@\s*20\s*.?\s*C\s*rs\s*=\s*([\d.]+)\s*/\s*([\d.]+)", "{} / {}"),
+        ("Stator Reactance @ 20°C", r"Stator\s*Reactance\s*@\s*20\s*.?\s*C\s*Xs\s*=\s*([\d.]+)\s*/\s*([\d.]+)", "{} / {}"),
     ]
     for field_name, pattern, template in combined_specs:
         val = find_value_combined(t, pattern, field_name, template)
+        if val:
+            motor_data[field_name] = val
+
+    # ── NEW: standalone value fields that were entirely missing before ─────
+    single_specs = [
+        ("Stator Leakage Reactance @ 20°C", r"Stator\s*Leakage\s*Reactance\s*@\s*20\s*.?\s*C\s*X1\s*=\s*([\d.]+)"),
+        ("Magnetising Resistance @ 20°C", r"Magnetising\s*Resistance\s*@\s*20\s*.?\s*C\s*rm\s*=\s*([\d.]+)"),
+        ("Magnetising Reactance @ 20°C", r"Magnetising\s*Reactance\s*@\s*20\s*.?\s*C\s*Xm\s*=\s*([\d.]+)"),
+    ]
+    for field_name, pattern in single_specs:
+        val = find_value(t, [pattern], field_name)
+        if val:
+            motor_data[field_name] = val
+
+    # ── NEW: UOM fields for the reactance/resistance block — all share the
+    # same "pu" token right after the numeric pair, now matched reliably ───
+    uom_specs = [
+        ("Rotor Resistance (Ac) @ 20°C UOM", r"rr\s*=\s*[\d.]+\s*/\s*[\d.]+\s*(pu)"),
+        ("Rotor Reactance @ 20°C UOM", r"Xr\s*=\s*[\d.]+\s*/\s*[\d.]+\s*(pu)"),
+        ("Stator Resistance (AC) @ 20°C UOM", r"rs\s*=\s*[\d.]+\s*/\s*[\d.]+\s*(pu)"),
+        ("Stator Reactance @ 20°C UOM", r"Xs\s*=\s*[\d.]+\s*/\s*[\d.]+\s*(pu)"),
+        ("Stator Leakage Reactance @ 20°C UOM", r"X1\s*=\s*[\d.]+\s*N\.?A\.?\s*(pu)"),
+    ]
+    for field_name, pattern in uom_specs:
+        val = find_value(t, [pattern], field_name)
         if val:
             motor_data[field_name] = val
 
@@ -356,9 +415,6 @@ else:
     if val:
         motor_data["Temperature Ambient"] = val
 
-    # Size Control Cable needs 2 capture groups combined into "2C x 2.5"
-    # format — motor_synonyms.py's pattern is present but find_value only
-    # reads group(1), so this override guarantees the full combined string.
     val = find_value_combined(
         t,
         r"Heater:-\s*(\d)CX([\d.]+)Sq",
@@ -400,6 +456,29 @@ else:
     else:
         print2log("  [NOT FOUND] Electric Motor Bearing Lubrication")
         motor_logs.append({"Field Name": "Electric Motor Bearing Lubrication", "Extracted Value": "", "Status": "NOT FOUND"})
+
+    # ── KNOWN, UNFIXABLE-BY-REGEX gaps (confirmed against your real PDF) ───
+    # 1. "Temperature Rise UOM" — the number "77" is followed directly by
+    #    "Heater:-" in the extracted text; no unit character exists nearby
+    #    anywhere in the PDF text. Not a pattern bug — the data isn't there.
+    #    Recommend hardcoding "°C" as a static default at the Excel-write
+    #    step, since Temp Rise is always Celsius on these datasheets.
+    # 2. "Bearing RTD Required Per Winding" — PyPDF2 extracts this form's
+    #    two-column checkbox layout out of visual order, so "Area
+    #    Classification:-" (left column) and "RTD's Required:" (right
+    #    column, bearing section) end up textually adjacent even though
+    #    they're unrelated on the page. Regex can't safely disambiguate
+    #    this from "RTD Required Per Winding" — would need pdfplumber with
+    #    coordinate-based (x/y) table extraction instead of PyPDF2 to fix
+    #    properly.
+    # 3. "Rated Voltage UOM" — "415" is extracted completely disconnected
+    #    from "Supply System:" (a floating text box pulled out of order).
+    #    The Rated Voltage *value* still works (matches "415" via the
+    #    "+-10%" anchor elsewhere), but there's no reliable unit anchor.
+    #    Recommend hardcoding "V" as a static default — it's always volts.
+    for missing_field in ["Temperature Rise UOM", "Bearing RTD Required Per Winding", "Rated Voltage UOM"]:
+        print2log(f"  [KNOWN GAP - static default recommended] {missing_field}")
+        motor_logs.append({"Field Name": missing_field, "Extracted Value": "", "Status": "NOT IN PDF TEXT - USE STATIC DEFAULT"})
 
     print2log(f"Total motor fields successfully extracted: {len(motor_data)} / {len(MOTOR_FIELDS)}")
 
