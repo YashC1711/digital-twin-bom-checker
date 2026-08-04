@@ -1,0 +1,35 @@
+Title
+OE Reliance Digital Twin
+AI & Data Science | KSB Limited
+Business Challenge
+Manual extraction from Pump/Motor Datasheets
+Time-consuming
+Risk of manual errors
+Standardization issues
+Solution Overview
+
+What the Digital Twin solution does
+Solution Architecture
+
+Simple block diagram
+Shared Folder → Scheduler → Rubiscape → Output Excel
+No technical node names
+Automation Workflow
+
+User steps
+Automatic processing
+Generated output
+Business Benefits
+
+Reduced manual effort
+Faster turnaround
+Consistent outputs
+Improved data quality
+Scalable solution
+Future Enhancements
+
+OCR support
+Feedback and learning mechanism
+More document types
+Dashboard & analytics
+Thank You
