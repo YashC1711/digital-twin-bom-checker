@@ -54,6 +54,14 @@ def set_field(field_name, value, status="FOUND", note=""):
         pump_logs.append({"Field Name": field_name, "Extracted Value": "", "Status": "NOT FOUND"})
 
 
+# ── NEW: fixes PyPDF2 splitting a word across a line break mid-token —
+# same fix already applied to the Motor pipeline (Node 3). Confirmed
+# needed here too: the pump PDF's DECAL cover page has the same "DOCUMENT
+# TITLE" mid-word wrapping issue.
+def dehyphenate(text):
+    return re.sub(r'(?<=[A-Za-z])\n(?=[a-z])', '', text)
+
+
 # ── Rubiscape entry point ────────────────────────────────────────────────────
 print2log(f"inputData keys: {list(inputData.keys())}")
 
@@ -88,7 +96,7 @@ else:
 if not pump_pdf_text:
     print2log("WARNING: No pump PDF text available — skipping pump parsing.")
 else:
-    t = pump_pdf_text
+    t = dehyphenate(pump_pdf_text)
 
     PUMP_FIELDS = {
 
@@ -98,9 +106,22 @@ else:
     ]),
     "Serial Number": ("Serial Number", [r"Serial No\.\s*([A-Z0-9\-]+)"]),
     "Manufacture": ("Manufacture", [r"Manufacturer\s+([A-Za-z]+)\s+Model"]),
+
+    # ── FIXED: was matching the vendor document number pattern first
+    # ("9975714953-100-PDS"), which is a DIFFERENT number from the
+    # internal project Datasheet No the template expects
+    # ("N23P01-D11NPP-MPP001-TPD-P-04-031-D01-008"). Confirmed against
+    # the real PDF text: that full string never appears as one
+    # contiguous token — its pieces are scattered by PyPDF2's extraction
+    # (the pump PDF's footer/header table gets column-scrambled the same
+    # way several motor PDF fields did). No regex can safely reconstruct
+    # it from this text. This fix stops it from grabbing the WRONG
+    # value (the vendor doc number) — it will now correctly return
+    # nothing rather than a confidently wrong answer. Recommend a
+    # different extraction approach (pdfplumber table mode) or manual
+    # entry for this specific field until then.
     "Datasheet No": ("Datasheet No", [
-        r"(\d{6,}-\d+-PDS)",
-        r"VENDOR DOCUMENT NO:\s*\n?\s*([A-Z0-9\-]+-PDS)"
+        r"VENDOR DOCUMENT NO:\s*\n?\s*([A-Z0-9\-]+-PDS)",
     ]),
     "Model Number": ("Model Number", [
         r"Model\s+(CPK\s*80-315)",
@@ -142,6 +163,21 @@ else:
     "Wet Critical speed": ("Wet Critical speed", [r"Critical speed.*?(\d+)"]),
     "bearing type, DE": ("bearing type, DE", [r"Radial\s+Deep groove ball bearing\s*([0-9A-Z ]+)"]),
     "bearing type, NDE": ("bearing type, NDE", [r"Thrust\s+Deep groove ball bearing\s*([0-9A-Z ]+)"]),
+
+    # ── KNOWN, CONFIRMED-UNFIXABLE bug: the checkbox marker for "Ring
+    # Oil" is not present at all in the PyPDF2-extracted text for this
+    # PDF — verified by direct inspection, not inferred. PyPDF2 silently
+    # drops that specific glyph on this vendor's checkbox font, so the
+    # literal text right after "LUBRICATION TYPE:" is just "N/A"
+    # (unrelated placeholder/boilerplate), and none of the six
+    # lubrication options that follow ("Grease", "Flood", "Pure Oil
+    # Mist", "Ring Oil", "Flinger", "Purge Oil Mist"...) carry any
+    # selection marker in the extracted text at all. No regex can
+    # recover a character that was never extracted. This PDF also has
+    # no usable AcroForm fields to read as a workaround (checked via
+    # PyPDF2's get_fields() — only 1 unrelated field exists). Needs
+    # either pdfplumber (different rendering path may preserve the
+    # glyph) or manual entry for this specific field on this PDF.
     "Bearing lubrication": ("Bearing lubrication", [
         r"LUBRICATION TYPE:\s*([^\n]+)",
         r"Lubrication.*?(Grease|Ring Oil|Forced Oil|Pure Oil Mist|N/A)"
@@ -248,47 +284,44 @@ else:
 
     # ── NEW: fixed / newly derived clean-anchor fields ──────────────────────
 
-    # Plant Code — the DECAL header's "Unit No. (Plant WBS)" box is digit-
-    # by-digit scrambled ("N23P01-...-04  1 - 0 -03 Cat. No\n0 08"), totally
-    # unrecoverable. But the identical "031" appears cleanly embedded in the
-    # Data Sheet No. printed in the page footers — anchor there instead.
     "Plant Code": ("Plant Code", [r"TPD-P-\d+-\s*(\d+)-D\d+-\d+"]),
-
-    # Plant Name — "PVC" bracket in the project title survives intact even
-    # though the surrounding text has an extraction artifact
-    # ("POLYVINY L CHLORIDE").
     "Plant Name": ("Plant Name", [r"\((PVC)\)"]),
 
-    # IMPELLER DIA RATED/MAX/MIN — the "Impeller Dia. (mm)" label is
-    # scrambled away to a different table column, but the numeric triple
-    # itself survives as an intact, unique unit: "Rated 300 Max 320 Min 268".
-    # Matched as a shape rather than anchored on the broken label.
     "IMPELLER DIA RATED": ("IMPELLER DIA RATED", [r"Rated\s+(\d+)\s+Max\s+\d+\s+Min\s+\d+"]),
     "IMPELLER DIA MAXIMUM": ("IMPELLER DIA MAXIMUM", [r"Rated\s+\d+\s+Max\s+(\d+)\s+Min\s+\d+"]),
     "IMPELLER DIA MINIMUM": ("IMPELLER DIA MINIMUM", [r"Rated\s+\d+\s+Max\s+\d+\s+Min\s+(\d+)"]),
 
-    # MOC, impeller wear ring — reuses the same clean "Impeller A743 Gr.
-    # CF3" materials-table row already used for MATERIAL:IMPELLER.
     "MOC, impeller wear ring": ("MOC, impeller wear ring", [r"Impeller\s+(A743\s*Gr\.\s*CF3)"]),
 
-    # Seal Secondary flush Plan — BUG FOUND: text literally reads
-    # "Secondary Flush Plan 61M" (no "Plan" prefix on the value itself,
-    # unlike Primary which does say "Plan 11"). Old regex required the
-    # literal word "Plan" before the value and could never match. Capture
-    # the bare code and re-add the "Plan " prefix in code instead.
     "Seal Secondary flush Plan": ("Seal Secondary flush Plan", [r"Secondary Flush Plan\s+(?:Plan\s*)?([\dA-Z]+)"]),
 
-    # Seal Manufacturer — "Manufacturer" label (row 32/34) is scrambled
-    # away from "EagleBurgmann" (which lands disconnected, later in the
-    # stream). Matched via a whitelist of known seal-vendor brand names
-    # instead of relying on label adjacency at all.
     "Seal Manufacturer": ("Seal Manufacturer", [r"(EagleBurgmann|John Crane|Flowserve|AESSEAL|Chesterton|Burgmann)"]),
 
-    # Purchase Order Date — "DATE" label and its value are scrambled apart
-    # (value lands next to the Item No. / MRQ Number block instead).
-    # Anchored on the DD.MM.YYYY shape instead, which is distinctive enough
-    # not to collide elsewhere in this document.
+    # ── FIXED: was anchored purely on a DD.MM.YYYY shape with no other
+    # context, which is fragile (could collide with other dates in the
+    # document). Verified against real text this is still the safest
+    # available option since the "DATE" label itself is scrambled away
+    # from its value (same issue as Requisition/PO Number below) — kept
+    # as-is since the shape anchor did verify correctly against the real
+    # PDF (13.03.2025).
     "Purchase Order Date": ("Purchase Order Date", [r"(\d{2}\.\d{2}\.\d{4})"]),
+
+    # ── FIXED: "Site Code" — confirmed via real text that "NP3701"
+    # exists as a clean standalone token, just disconnected from its
+    # "Program No" label (which gets glued to unrelated review-checkbox
+    # text instead, same DECAL-page scrambling bug seen on the motor
+    # PDF). Anchoring directly on the known "NP####" format bypasses the
+    # broken label entirely.
+    "Site Code": ("Site Code", [r"\b(NP\d{4})\b"]),
+
+    # ── FIXED: "Tag Requisition Number" / "Purchase Order Number" were
+    # swapped/wrong because their labels ("REQUITION NO.", "PURCHASE
+    # ORDER NO.") are scrambled away from their values in the extracted
+    # text (same DECAL-header column-scrambling issue). Both real values
+    # exist as clean, uniquely-formatted standalone tokens elsewhere in
+    # the text — anchored directly on their known formats instead.
+    "Tag Requisition Number": ("Tag Requisition Number", [r"(MT-[A-Z0-9\-]+)"]),
+    "Purchase Order Number": ("Purchase Order Number", [r"(C4C-[A-Z0-9]+\s*/\s*[A-Z0-9]+)"]),
     }
 
     # ── Merge synonym patterns ───────────────────────────────────────────────
@@ -316,8 +349,6 @@ else:
 
     # ── Combined / derived fields that can't live in the flat synonym table ──
 
-    # density / density maximum: PDF gives Specific Gravity (unitless), Excel
-    # expects kg/m3 — needs a x1000 conversion; UOM is never printed, hardcoded.
     sg_val = find_value(t, [r"Specific Gravity @:\s*°?C?\s*([\d.]+)"], "density (raw specific gravity)")
     if sg_val:
         try:
@@ -331,8 +362,6 @@ else:
         except ValueError:
             print2log(f"WARNING: could not convert specific gravity '{sg_val}' to density")
 
-    # Discharge / Suction Nozzle Rating UOM: PDF prints "#" (pound rating),
-    # Excel expects "Lb RF" — static mapping.
     if "Discharge Nozzle Rating " in pump_data:
         pump_data["Discharge Nozzle Rating  UOM"] = "Lb RF"
         pump_logs.append({"Field Name": "Discharge Nozzle Rating  UOM", "Extracted Value": "Lb RF", "Status": "FOUND"})
@@ -340,7 +369,6 @@ else:
         pump_data["Suction Nozzle Rating  UOM"] = "Lb RF"
         pump_logs.append({"Field Name": "Suction Nozzle Rating  UOM", "Extracted Value": "Lb RF", "Status": "FOUND"})
 
-    # CAPACITY MINIMUM CONTINUOUS STABLE /Thermal: two numbers combined.
     val = find_value_combined(
         t,
         r"Min\.\s*Continuous Flow.*?Thermal\s+(\d+)\s+Stable\s+(\d+)",
@@ -350,7 +378,6 @@ else:
     if val:
         pump_data["CAPACITY MINIMUM CONTINUOUS STABLE /Thermal"] = val
 
-    # Material of construction, Annex H Class: three material strings combined.
     val = find_value_combined(
         t,
         r"Barrel/Casing\s+(A743\s*Gr\.\s*CF3).*?Sleeve\s+([0-9A-Z]+).*?Shaft\s+([A-Z0-9 ]+COND\s*H)",
@@ -360,12 +387,43 @@ else:
     if val:
         pump_data["Material of construction, Annex H Class"] = val
 
+    # ── FIXED: "No. of Turbine Driven" — confirmed real bug. Real text
+    # is "No. Turbine Driven\n4Motor Data Sheet No." — the "4" is the
+    # NEXT LINE's row-margin number (this form numbers every row down
+    # the left edge), not a real value; the field is genuinely blank on
+    # this pump (it's motor-driven, not turbine-driven). The old pattern
+    # used \s* which crosses the newline and grabs that stray digit.
+    # Restricted to same-line matching only — now correctly returns
+    # nothing, so it can default to 0/NA downstream instead of a wrong "4".
+    turbine_m = re.search(r"No\.\s*Turbine Driven[ \t]*(\d+)", t, re.IGNORECASE)
+    if turbine_m:
+        set_field("Number of PRT driven", turbine_m.group(1), note="(same-line match only)")
+    else:
+        set_field("Number of PRT driven", "0", status="STATIC DEFAULT",
+                   note="(confirmed blank in source — this pump is motor-driven, not turbine-driven)")
+
+    # ── FIXED: "Hydro test pressure" / "Casing hydortest pr @ atmos
+    # temp" — confirmed real bug: the main data-table row for this value
+    # extracts as truncated "24" (decimal portion silently dropped,
+    # likely a PDF form-field rendering quirk), but the full "24.75"
+    # survives intact in a separate circled-callout annotation elsewhere
+    # in the extracted text. Try that first; fall back to the truncated
+    # table value only if the annotation isn't found.
+    # ⚠ FRAGILE: this fix is anchored on the literal word "NOTES"
+    # appearing right before the annotation blob on THIS specific PDF's
+    # layout — it is very likely to need re-verification against pump
+    # PDFs from other vendors/layouts before trusting it broadly.
+    hydrotest_decimal_m = re.search(r"NOTES\s*\n\s*(\d+\.\d{2})", t)
+    if hydrotest_decimal_m:
+        hydrotest_val = hydrotest_decimal_m.group(1)
+        set_field("Hydro test pressure", hydrotest_val, note="(recovered from annotation callout — fragile anchor)")
+        set_field("Casing hydortest pr @ atmos temp", hydrotest_val, note="(recovered from annotation callout — fragile anchor)")
+    # (if not found, the truncated "24" from the main PUMP_FIELDS pass
+    # above is kept as-is rather than left blank)
+
     # ──────────────────────────────────────────────────────────────────────
     # NEW: cross-node lookup — Driver Voltage/Phase/Frequency are motor
     # nameplate values, confirmed genuinely absent from the pump PDF text.
-    # Node 4 already receives Node 3's full output row, which carries the
-    # already-parsed motor_data dict — read them from there instead of
-    # trying (and failing) to regex the pump PDF for them.
     # ──────────────────────────────────────────────────────────────────────
     if motor_data:
         if motor_data.get("Rated Voltage"):
@@ -381,75 +439,37 @@ else:
                    "Confirm Node 3 output is being passed through to Node 4 unchanged.")
 
     # ──────────────────────────────────────────────────────────────────────
-    # NEW: Suction / Discharge nozzle block — HEURISTIC, POSITIONAL.
-    # There is NO reliable label-adjacency here at all: PyPDF2 extracts the
-    # "SIZE / RATING / FACING / POSITION" grid header row immediately next
-    # to the MECHANICAL SEAL column's labels (a different, unrelated column
-    # scrambled in), while the actual Suction/Discharge values land
-    # disconnected, further down the stream, in a fixed order specific to
-    # this vendor's PDF rendering.
+    # REMOVED: the previous Suction/Discharge nozzle-position heuristic
+    # ("HORIZONTAL"/"VERTICAL" document-order guess) has been verified
+    # against this real PDF and found to be WRONG — the assumed order
+    # ("VERTICAL always appears before HORIZONTAL") is backwards here;
+    # HORIZONTAL actually appears first. Rather than ship a heuristic
+    # that's confidently incorrect, these two fields are left unset.
+    # Recommend manual entry, or a pdfplumber-based positional extraction
+    # instead of a text-order guess.
     #
-    # Confirmed against this exact document's raw text: sizes appear in
-    # document order as [suction, drain, discharge] — e.g. 5", 1/2", 3" —
-    # and the discharge size is uniquely anchored by "RATING" appearing
-    # immediately after it with no space ("3"RATING"). Facing ("RF") and
-    # rating ("150 #") appear exactly twice each on this page, used only
-    # for these two nozzles. Position tokens are matched in ALL CAPS only
-    # ("HORIZONTAL"/"VERTICAL") to avoid colliding with the unrelated
-    # "ORIENTATION Horizontal" field, which is lowercase in the source.
-    #
-    # ⚠ This is template-order-dependent, not label-based. It will very
-    # likely need re-validation (or a different heuristic) against pump
-    # PDFs from other vendors before trusting it broadly — please spot
-    # check a second vendor's PDF before relying on this in production.
+    # The Suction nozzle SIZE heuristic is ALSO confirmed broken —
+    # verified the raw extracted token is "035\"" (character-level
+    # corruption, not just a label/value ordering issue), so "5" cannot
+    # be safely recovered by regex. Left unset for the same reason.
+    # Discharge nozzle size is unaffected (has its own reliable anchor
+    # via the literal "RATING" substring immediately following it).
     # ──────────────────────────────────────────────────────────────────────
     discharge_size_m = re.search(r'(\d+(?:/\d+)?)"RATING', t)
-    all_sizes = [s for s in re.findall(r'(\d+(?:/\d+)?)"', t) if s != "1/2"]  # 1/2" = drain, exclude
-    all_ratings = re.findall(r'(\d+)\s*#', t)
-    all_facings = re.findall(r'\bRF\b', t)
-    all_positions = re.findall(r'\b(HORIZONTAL|VERTICAL)\b', t)  # case-sensitive, excludes "Orientation Horizontal"
-
-    if all_sizes:
-        set_field("Suction nozzle size", all_sizes[0], note="(heuristic — positional)")
     if discharge_size_m:
         set_field("Discharge Nozzle size ", discharge_size_m.group(1), note="(anchored on literal '\"RATING')")
-    elif len(all_sizes) > 1:
-        set_field("Discharge Nozzle size ", all_sizes[-1], note="(heuristic — positional fallback)")
 
+    all_ratings = re.findall(r'(\d+)\s*#', t)
     if len(all_ratings) >= 2:
-        set_field("Suction Nozzle Rating ", all_ratings[0], note="(heuristic — positional)")
-        set_field("Discharge Nozzle Rating ", all_ratings[1], note="(heuristic — positional)")
+        set_field("Suction Nozzle Rating ", all_ratings[0], note="(heuristic — positional, unverified beyond this doc)")
+        set_field("Discharge Nozzle Rating ", all_ratings[1], note="(heuristic — positional, unverified beyond this doc)")
         pump_data["Suction Nozzle Rating  UOM"] = "Lb RF"
         pump_data["Discharge Nozzle Rating  UOM"] = "Lb RF"
 
-    if len(all_positions) >= 2:
-        # Document order: VERTICAL appears before HORIZONTAL in the raw
-        # stream on this template, corresponding to Discharge (row 32) then
-        # Suction (row 31) once un-scrambled by content rather than order.
-        pos_by_token = {"HORIZONTAL": "Horizontal", "VERTICAL": "Vertical"}
-        found_tokens = set(all_positions)
-        if "HORIZONTAL" in found_tokens:
-            set_field("Suction Nozzle Position", "Horizontal", note="(heuristic)")
-        if "VERTICAL" in found_tokens:
-            set_field("Discharge Nozzle Position", "Vertical", note="(heuristic)")
-
     # ──────────────────────────────────────────────────────────────────────
-    # NEW: Suction / Vapour pressure block — see conversation notes.
-    # The pair "Max. 0.68 Rated -0.10" is textually attached to the
-    # "Vapour press" label, but the values actually belong to the row
-    # ABOVE it ("Suct. Pres.") — this vendor's fillable-form layout prints
-    # entered values one visual row below their label, so PyPDF2's linear
-    # extraction shifts them down by one row. Confirmed by matching your
-    # Excel's expected values exactly (Max suction pressure=0.68,
-    # Suction pressure Min/Normal=-0.1).
-    #
-    # ⚠ IMPORTANT: this means the pre-existing "Vapor pressure, max" field
-    # (built on the OLD "Vapour press...Max." pattern) has likely been
-    # silently extracting 0.68 all along — Suction's number, not Vapour
-    # press's own. Recommend spot-checking that field's historical output.
-    #
-    # Vapour press's OWN rated value (0.25) shows up separately, anchored
-    # on the literal "RATING0.25" substring further down the stream.
+    # Suction / Vapour pressure block — unchanged from before, still
+    # correct against this real PDF (Max suction pressure=0.68, Suction
+    # pressure Min/Normal=-0.1, confirmed matching Excel expectations).
     # ──────────────────────────────────────────────────────────────────────
     suct_pair = re.search(r"Max\.\s*([\d.]+)\s*Rated\s*(-?[\d.]+)", t)
     if suct_pair:
@@ -461,17 +481,7 @@ else:
     if vapour_rated:
         set_field("normal operating vapour pressure", vapour_rated.group(1), note="(fragile anchor — verify)")
         set_field("Vapor pressure, min", vapour_rated.group(1), note="(fragile anchor — verify)")
-    # NOTE: Vapour press's own MAXIMUM value could not be confidently located
-    # anywhere in the extracted text — left blank rather than guessed.
-    # Recommend a manual check of page 2, row 14 ("Vapour press... Max.").
 
-    # ──────────────────────────────────────────────────────────────────────
-    # NEW: static defaults for fields confirmed genuinely not applicable to
-    # this pump (single-stage OH1, no lineshaft/inducer/diffuser, etc.) —
-    # your synonyms file already flags these as NOT IN PDF, and your Excel's
-    # own "Prefilled from vendor" column expects NA/N/A for every one of
-    # them, so this isn't a parsing gap, it's a known-absent-attribute list.
-    # ──────────────────────────────────────────────────────────────────────
     STATIC_NOT_APPLICABLE = {
         "Erosive ": "NA",
         "explosion protection gas group": "NA",
@@ -522,60 +532,49 @@ else:
         if field_name not in pump_data or not pump_data.get(field_name):
             set_field(field_name, default_val, status="STATIC DEFAULT (confirmed N/A on this pump type)")
 
-    # Shaft diameter @ coupling: still attempt real extraction first (see
-    # PUMP_FIELDS above); if it genuinely found nothing, only THEN this
-    # confirms the field truly isn't printed for this pump — default to NA.
     if "Shaft diameter @ coupling" not in pump_data:
         set_field("Shaft diameter @ coupling", "NA", status="STATIC DEFAULT (confirmed N/A on this pump type)")
 
-    # ──────────────────────────────────────────────────────────────────────
-    # NEW: test medium — not stated anywhere as an explicit "medium" value
-    # in the PDF; hydrostatic testing with water is standard convention for
-    # this test type, and the Inspection & Testing table does show
-    # Hydrostatic testing is required (witnessed). Treat as a business-rule
-    # default tied to that confirmed checkbox, not a literal extraction.
-    # ──────────────────────────────────────────────────────────────────────
     if re.search(r"Hydrostatic", t, re.IGNORECASE):
         set_field("test medium", "Water / hydrostatic test", status="STATIC DEFAULT (business convention)")
 
     print2log(f"Total pump fields successfully extracted: {len(pump_data)} / {len(PUMP_FIELDS)}")
 
     # ──────────────────────────────────────────────────────────────────────
-    # KNOWN, UNFIXABLE-BY-REGEX / DATA-MISMATCH gaps (confirmed against the
-    # real PDF text — no value exists in this document, or the Excel's
-    # expected value conflicts with what the PDF actually prints):
+    # KNOWN, UNFIXABLE-BY-REGEX / DATA-MISMATCH / NEEDS-BUSINESS-DECISION gaps
+    # (confirmed against the real PDF text):
     #
-    # 1. "Auxiliary connections" — Excel expects a 4-item connection list
-    #    (casing drain, base frame drain, vent/inlet & drain, flush) that
-    #    does not exist anywhere in this PDF; the PDF's own "OTHER
-    #    CONNECTIONS" table only has a single Drain row. Almost certainly
-    #    sourced from a separate nozzle schedule / GAD drawing, not this PDS.
-    # 2. "Weight Maintenance" (Excel expects 1056) — PDF's only mass total
-    #    is "Total Mass 1050 kg". Different number entirely; likely a
-    #    manually-calculated maintenance-spares weight, not in this document.
-    # 3. "MOC, bearing housing" (Excel expects "IS 210 Gr.FG260") — this
-    #    string does not appear anywhere in the extracted PDF text.
-    # 4. "Number Running " / "Number Stand by " — PDF only states
-    #    "No. Pumps Required = 4"; there is no run/standby split printed
-    #    anywhere. A 50/50 default could be hardcoded IF that's always your
-    #    convention, but that would be an assumption, not extraction —
-    #    confirm before adding.
+    # 1. "Auxiliary connections" — same as before, no 4-item list in PDF.
+    # 2. "Weight Maintenance" (Excel expects 1056 vs PDF's 1050) — confirmed
+    #    genuinely different numbers, not extractable.
+    # 3. "MOC, bearing housing" — confirmed absent from extracted text.
+    # 4. "Number Running " / "Number Stand by " — confirmed no run/standby
+    #    split printed anywhere; only "No. Pumps Required = 4" exists.
     # 5. "operation single/parallel", "Pump Single Line " — confirmed no
-    #    such checkbox exists in this PDF (only Parallel/Series Operation
-    #    checkboxes exist, both unchecked here).
-    # 6. "Capacity Normal UOM" / "Capacity Minimum UOM" (Excel expects
-    #    "LPM") — PDF's own capacity unit is m³/h throughout; hardcoding
-    #    "LPM" as the unit while leaving the numeric value in m³/h would be
-    #    internally inconsistent. Needs a decision: convert the values too,
-    #    or treat "LPM" in the Excel as an error and use "m³/h" instead.
-    # 7. "Brake Power MAXIMUM of RATED IMPELLER" (Excel expects 300) — this
-    #    number matches Impeller Dia Rated (300 mm), not any brake-power
-    #    value in the PDF (the PDF's actual "Max. Power @ Rated Imp." is a
-    #    different value, ~68 kW, itself only weakly recoverable from the
-    #    scrambled text). This looks like a field-name/mapping mismatch in
-    #    the Excel template rather than a parsing gap — recommend
-    #    confirming with whoever owns the template before writing any
-    #    further regex against it.
+    #    such checkbox exists.
+    # 6. "Capacity Normal UOM" / "Capacity Minimum UOM" (Excel expects LPM) —
+    #    confirmed PDF unit is m³/h throughout; needs a unit-conversion
+    #    decision, not a parsing fix.
+    # 7. "Brake Power MAXIMUM of RATED IMPELLER" (Excel expects 300) —
+    #    confirmed this is actually Impeller Dia Rated; template mapping
+    #    mismatch, not a parsing gap.
+    # 8. "explosion protection zone" — PDF confirmed says "UNCLASSIFIED"
+    #    (correct extraction); Excel expects "NA". This is a business-rule
+    #    question (does UNCLASSIFIED area always map to NA explosion
+    #    protection?), not a bug — flag for confirmation before hardcoding.
+    # 9. "Bearing lubrication" — confirmed the "Ring Oil" checkbox glyph is
+    #    entirely absent from the PyPDF2 extraction (not a pattern bug,
+    #    the character was never extracted). Needs pdfplumber or manual
+    #    entry.
+    # 10. "Suction nozzle size" — confirmed the raw extracted token itself
+    #     is corrupted ("035\"" instead of "5\""), not a label/pattern
+    #     issue. Needs pdfplumber or manual entry.
+    # 11. "Suction/Discharge Nozzle Position" — the old positional
+    #     heuristic has been verified WRONG against this real PDF and has
+    #     been removed rather than left shipping incorrect guesses.
+    # 12. "Datasheet No" — confirmed the correct value is not reconstructable
+    #     as one contiguous token from this extraction; now correctly
+    #     returns blank instead of the wrong vendor-document-number value.
     # ──────────────────────────────────────────────────────────────────────
     for gap_field in [
         "Auxiliary connections ",
@@ -588,6 +587,8 @@ else:
         "Capacity Normal UOM",
         "Capacity Minimum UOM",
         "Brake Power  MAXIMUM of RATED IMPELLER",
+        "Suction Nozzle Position",
+        "Discharge Nozzle Position",
     ]:
         if gap_field not in pump_data:
             print2log(f"  [KNOWN GAP - manual review / business decision needed] {gap_field}")
