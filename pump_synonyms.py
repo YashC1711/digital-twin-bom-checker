@@ -1,11 +1,19 @@
 import pandas as pd
 
-print2log("===== NODE: Load Pump Field Synonyms (198-field version) =====")
+print2log("===== NODE: Load Pump Field Synonyms (198-field version, FIXED) =====")
 
 PUMP_SYNONYMS = {
     # ── Header / Tag block ──────────────────────────────────────────────
     "Tag Description": [(r"DOCUMENT TITLE:\s*([^\n]+)", 1)],
-    "Site Code": [(r"Program No\s*\n?\s*([A-Z0-9]+)", 1)],
+
+    # ── FIXED: confirmed against real PDF text — "NP3701" exists as a
+    # clean standalone token, just disconnected from its "Program No"
+    # label (which gets glued to unrelated review-checkbox text instead).
+    # Anchoring directly on the known "NP####" format bypasses the
+    # broken label entirely, same fix approach used for Manufacture on
+    # the motor PDF.
+    "Site Code": [(r"\b(NP\d{4})\b", 1)],
+
     "Site Name": [(r"PROJECT TITLE:\s*([^\n]+)", 1)],
     "Plant Code": [(r"Unit No\.\s*\(Plant WBS\).*?-\s*(\d+)\s*-", 1)],
     "Plant Name": [],  # NOT IN PDF — derived substring of Site Name ("PVC"), not a distinct field
@@ -20,7 +28,7 @@ PUMP_SYNONYMS = {
     "Driver Frequency UOM": [],          # NOT IN PDF — motor datasheet field
     "Driver Rating UOM": [(r"NAMEPLATE POWER\s*[\d.]+\s*(Kw)", 1)],
 
-    "Weight Maintenance": [],            # NOT IN PDF as such — closest is Total Mass=1050, but Excel value 1056 differs; flag for manual check
+    "Weight Maintenance": [],            # NOT IN PDF as such — closest is Total Mass=1050, but Excel value 1056 differs; confirmed genuine mismatch, flag for manual check
     "Weight Maintenance UOM": [(r"Total Mass\s*\d+\s*(kg)", 1)],
 
     " Viscosity Maximum UOM": [(r"Viscosity\s*\((cP)\)", 1)],
@@ -35,7 +43,7 @@ PUMP_SYNONYMS = {
     "Bearing RTD, radial bearing": [(r"Radial\s+(Deep groove ball bearing[0-9A-Z ]+)", 1)],
     "Bearing RTD, thrust bearing": [(r"Thrust\s+(Deep groove ball bearing[0-9A-Z ]+)", 1)],
 
-    "Brake Power  MAXIMUM of RATED IMPELLER": [(r"Impeller Dia\.\s*\(mm\).*?Rated\s+(\d+)", 1)],  # NOTE: Excel expects 300 which is actually Impeller Dia Rated, not Max Power(68kW) — likely field-mapping mismatch in template, flag for review
+    "Brake Power  MAXIMUM of RATED IMPELLER": [(r"Impeller Dia\.\s*\(mm\).*?Rated\s+(\d+)", 1)],  # NOTE: Excel expects 300 which is actually Impeller Dia Rated, not Max Power(68kW) — confirmed field-mapping mismatch in template, flag for review, not a parsing bug
     "Brake Power  MAXIMUM of RATED IMPELLER UOM": [(r"Impeller Dia\.\s*\((mm)\)", 1)],
 
     "CAPACITY MINIMUM CONTINUOUS STABLE /Thermal": [
@@ -49,12 +57,26 @@ PUMP_SYNONYMS = {
     "Capacity Minimum UOM": [],  # NOT IN PDF — no "Capacity Minimum" field; PDF only has Normal/Rated, in m3/h not LPM
 
     "Capacity Normal": [(r"Capacity.*?Normal\s+(\d+)", 1)],
-    "Capacity Normal UOM": [],   # NOT IN PDF as LPM — PDF unit is m3/h; unit mismatch, not just naming
+    "Capacity Normal UOM": [],   # NOT IN PDF as LPM — confirmed PDF unit is m3/h; unit mismatch, not just naming, needs a conversion decision
 
-    "Casing hydortest pr @ atmos temp": [(r"Hydrotest Pressure\s*\(kg/cm²?g\):\s*([\d.]+)", 1)],
+    "Casing hydortest pr @ atmos temp": [
+        # ── FIXED: main table row extracts truncated ("24" instead of
+        # "24.75") — confirmed a decimal-precision extraction quirk on
+        # this PDF, not a regex issue. The full "24.75" survives in a
+        # separate annotation callout elsewhere in the text; try that
+        # shape first. ⚠ Fragile — anchored on this specific PDF's
+        # layout, may need re-verification on other vendor PDFs.
+        (r"NOTES\s*\n\s*(\d+\.\d{2})", 1),
+        (r"Hydrotest Pressure\s*\(kg/cm²?g\):\s*([\d.]+)", 1),
+    ],
     "Casing hydortest pr @ atmos temp UOM": [(r"Hydrotest Pressure\s*\((kg/cm²?g)\)", 1)],
+
     "Casing MAWP @ max op temp": [(r"Max\.\s*Allowable Working Pressure\s*\(MAWP\):\s*([\d.]+)", 1)],
-    "Casing MAWP @ max op temp UOM": [(r"Max\.\s*Allowable Working Pressure\s*\(MAWP\)", 0)],  # unit not printed separately; use whole match as marker
+    # ── FIXED: was using the whole regex match itself as a placeholder
+    # "UOM" value (a hack, per the original comment) — confirmed against
+    # real text that a genuine unit anchor DOES exist right after the
+    # value: "(MAWP): 16.5 (kg/cm²g)". Captures the actual unit now.
+    "Casing MAWP @ max op temp UOM": [(r"MAWP\):\s*[\d.]+\s*\((kg/cm²g)\)", 1)],
 
     "CASING MOUNTING": [(r"CASING MOUNTING.*?;\s*(Foot|Sump|Centreline|Near Centreline|Vertical|Vertical Barrel|Inline|Bracket)", 1)],
     "CASING TYPE": [(r"CASING TYPE.*?;\s*(Single Volute|Double Volute|Diffuser|Staggered|Vertical Double|Barrel)", 1)],
@@ -165,7 +187,7 @@ PUMP_SYNONYMS = {
     "Minimum Design Metal Temperature UOM": [(r"MDMT\s*=\s*\d+\s*(°C)", 1)],
 
     "MOC, barrel": [(r"Barrel/Casing\s+(A743\s*Gr\.\s*CF3)", 1)],
-    "MOC, bearing housing": [],  # NOT IN PDF — no bearing housing material field
+    "MOC, bearing housing": [],  # NOT IN PDF — confirmed absent from extracted text, no bearing housing material field
     "MOC, case wear ring": [(r"Case Wear Rings\s+(A743\s*Gr\.CF3\s*\(Col coat\))", 1)],
     "MOC, cover": [(r"Case\s+(A743\s*Gr\.\s*CF3)", 1)],  # closest available — PDF has no separate "cover", covered under "Case"
     "MOC, impeller wear ring": [(r"Imp\.\s*Wear Rings\s+(A743\s*Gr\.\s*CF3)", 1)],
@@ -199,7 +221,12 @@ PUMP_SYNONYMS = {
     "NPSHr @ shaft centreline, rated capcity UOM": [(r"NPSH Required\s*\((m Water)\)", 1)],
 
     "Number Installed ": [(r"No\.\s*Pumps Required\s*(\d+)", 1)],
-    "Number of PRT driven": [(r"No\.\s*Turbine Driven\s*(\d+)", 1)],
+    # ── FIXED: was crossing a newline (\s*) and grabbing the NEXT
+    # line's row-margin number instead of the real (blank) value.
+    # Confirmed against real text: "No. Turbine Driven\n4Motor Data
+    # Sheet No." — that "4" belongs to the following line's row label,
+    # not this field. Restricted to same-line matching.
+    "Number of PRT driven": [(r"No\.\s*Turbine Driven[ \t]*(\d+)", 1)],
     "Number of seals per pump": [],  # NOT IN PDF explicitly — inferred as 1 from "Single" cartridge mount, not a direct field
 
     "Number Running ": [],   # NOT IN PDF — derived split of "No. Pumps Required = 4", not stated directly
@@ -263,6 +290,11 @@ PUMP_SYNONYMS = {
     "Specific Speed": [(r"Suction Specific Speed\s*(\d+)", 1)],
     "Specific Speed UOM": [(r"Suction Specific Speed\s*\d+\s*(rpm, m, m³/h)", 1)],
 
+    # ── CONFIRMED UNFIXABLE: the raw extracted token for Suction size is
+    # "035\"" (character-level corruption in the source extraction, not
+    # a label/pattern issue) — verified directly against the real PDF
+    # text. Left as-is rather than guessing a "cleanup" regex; needs
+    # pdfplumber or manual entry. See Node 4 comments for detail.
     "Suction Nozzle Rating ": [(r"Suction\s+\d+(?:/\d+)?\"?\s+(\d+)\s*#", 1)],
     "Suction Nozzle Rating  UOM": [(r"Suction\s+\d+(?:/\d+)?\"?\s+\d+\s*(#)", 1)],
     "Suction nozzle size": [(r"Suction\s+(\d+)(?:/\d+)?\"", 1)],
@@ -289,9 +321,16 @@ PUMP_SYNONYMS = {
     "Wet Critical speed": [],       # NOT IN PDF — no critical speed field
     "Wet Critical speed UOM": [],   # NOT IN PDF
 
-    "Tag Requisition Number": [(r"REQUITION NO\.\s*([A-Z0-9\-]+)", 1)],
-    "Purchase Order Number": [(r"PURCHASE ORDER NO\.\s*([A-Z0-9/\-]+)", 1)],
-    "Purchase Order Date": [(r"DATE\s*([\d.]+)", 1)],
+    # ── FIXED: "Tag Requisition Number" and "Purchase Order Number"
+    # were swapped/wrong because "REQUITION NO." and "PURCHASE ORDER
+    # NO." labels are scrambled away from their actual values in the
+    # extracted text (same DECAL-header column-scrambling bug already
+    # fixed for Site Code above). Both real values exist as clean,
+    # uniquely-formatted standalone tokens elsewhere — anchored on their
+    # known formats instead of the broken labels.
+    "Tag Requisition Number": [(r"(MT-[A-Z0-9\-]+)", 1)],
+    "Purchase Order Number": [(r"(C4C-[A-Z0-9]+\s*/\s*[A-Z0-9]+)", 1)],
+    "Purchase Order Date": [(r"(\d{2}\.\d{2}\.\d{4})", 1)],
 }
 
 rows = []
